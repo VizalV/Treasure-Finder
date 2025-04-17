@@ -1,16 +1,8 @@
-# treasure_hunt_with_reselect.py
-# ---------------------------------------
-# Prerequisites:
-#   pip install opencv-python ultralytics deep_sort_realtime numpy
-#
-# Usage:
-#   python treasure_hunt_with_reselect.py
-# ---------------------------------------
-
 import cv2
 import math
 import random
 import numpy as np
+import datetime
 from ultralytics import YOLO
 from deep_sort_realtime.deepsort_tracker import DeepSort
 
@@ -45,12 +37,14 @@ def main():
     # ——— Config ———
     DIST_THRESHOLD = 50    # in pixels
     CAMERA_INDEX = 0
+    DETECT_EVERY = 3     # run detection every N frames
+    RESIZE_DIM   = 320   # detector input size
     # -------------- 
 
     detector = YOLO('yolov8n.pt')
     tracker  = DeepSort(max_age=30, n_init=3)
 
-    cap = cv2.VideoCapture(CAMERA_INDEX)
+    cap = cv2.VideoCapture(0)
     
     print("📷  cap.isOpened():", cap.isOpened())
     if not cap.isOpened():
@@ -61,27 +55,33 @@ def main():
     hunter_id   = None
     known_obj_ids = set()
     state = "WAIT_OBJECT"
-
+    prev_time     = datetime.datetime.now()
+    frame_idx = 0
     print("🔍 Waiting for non-person object to pick treasure...")
 
     while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            break
+        h0, w0 = frame.shape[:2]
 
-        # 1) Detection
-        results = detector(frame)[0]
-        dets_for_tracker = []
-        for b in results.boxes:
-            x1, y1, x2, y2 = map(int, b.xyxy[0])
-            w, h = x2 - x1, y2 - y1
-            conf = float(b.conf[0])
-            cls  = int(b.cls[0])
-            # DeepSort wants tlwh format:
-            dets_for_tracker.append(([x1, y1, w, h], conf, cls))
-
-        # 3) Tracking
-        tracks = tracker.update_tracks(dets_for_tracker, frame=frame)
-
+        # 1) Detection / Tracking
+        if frame_idx < 5 or frame_idx % DETECT_EVERY == 0:
+            small   = cv2.resize(frame, (RESIZE_DIM, RESIZE_DIM))
+            results = detector(small)[0]
+            scale_x = w0 / RESIZE_DIM
+            scale_y = h0 / RESIZE_DIM
+            dets    = []
+            for x1, y1, x2, y2, conf, cls in results.boxes.data.tolist():
+                x1o = int(x1 * scale_x)
+                y1o = int(y1 * scale_y)
+                wo  = int((x2 - x1) * scale_x)
+                ho  = int((y2 - y1) * scale_y)
+                dets.append(([x1o, y1o, wo, ho], conf, int(cls)))
+            tracks = tracker.update_tracks(dets, frame=frame)
+        else:
+            tracks = tracker.update_tracks([], frame=frame)
+        frame_idx += 1
         # build current lists
         curr_objs = [t for t in tracks if t.is_confirmed() and t.det_class != 0]
         curr_persons = [t for t in tracks if t.is_confirmed() and t.det_class == 0]
@@ -120,7 +120,7 @@ def main():
         if state == "HUNTING":
             box_t = next((t.to_ltrb() for t in tracks if t.track_id==treasure_id and t.is_confirmed()), None)
             box_h = next((t.to_ltrb() for t in tracks if t.track_id==hunter_id   and t.is_confirmed()), None)
-            if box_t.any() and box_h.any():
+            if box_t is not None and box_h is not None:
                 c_t, c_h = centroid(box_t), centroid(box_h)
                 dist = euclidean(c_t, c_h)
                 if dist < DIST_THRESHOLD:
@@ -151,9 +151,12 @@ def main():
 
         # draw sidebar of known objects
         out = draw_sidebar(frame, known_obj_ids, treasure_id)
-
+        now = datetime.datetime.now()
+        fps = 1.0 / (now - prev_time).total_seconds()
+        prev_time = now
+        cv2.putText(out, f"FPS: {fps:.1f}", (20,50),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0,255,255), 2)
         cv2.imshow("Treasure Hunt", out)
-
         if state == "FOUND":
             cv2.waitKey(0)
             break
