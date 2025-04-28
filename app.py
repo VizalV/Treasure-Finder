@@ -17,12 +17,38 @@ def centroid(box):
 def euclidean(a, b):
     return math.hypot(a[0] - b[0], a[1] - b[1])
 
+import math
+
+def compute_round_score(elapsed_secs: float) -> int:
+    """
+    Example scoring functions — pick one that fits you:
+
+    1) **Linear decay** (max 100 points, lose 1 point per second):
+       score = max(0, 100 - elapsed_secs)
+
+    2) **Inverse** (quick finds get big reward; scales down smoothly):
+       score = int(1000 / (1 + elapsed_secs))
+
+    3) **Exponential decay** (fast finds are heavily rewarded):
+       base, decay = 500, 0.1
+       score = int(base * math.exp(-decay * elapsed_secs))
+
+    You can tweak the constants (100, 1000, base, decay) to taste.
+    """
+    # here’s the inverse version by default:
+    base, decay = 500, 0.1
+    score = int(base * math.exp(-decay * elapsed_secs))
+
+    return score
+
 def main():
     st.set_page_config(layout="wide")
     st.title("3D Object Tracking Treasure Hunt")
     col1, col2, col3 = st.columns([3,1,1])
     video_container = col1.empty()
     info_container = col2.empty()
+    timer_container = col2.empty()
+    score_container = col3.empty()
 
     # Initialize or retrieve session states
     if 'detector' not in st.session_state:
@@ -36,23 +62,35 @@ def main():
         st.session_state.state = "WAIT_OBJECT"
         st.session_state.prev_time = datetime.datetime.now()
         st.session_state.frame_idx = 0
+        
+        # ⏱ timer & score
+        st.session_state.start_time     = None
+        st.session_state.end_time       = None
+        st.session_state.timer_running  = False
+        st.session_state.score          = 0
 
     detector = st.session_state.detector
     tracker = st.session_state.tracker
     cap = st.session_state.cap
-
-    start = col2.button("Select Treasure")
-    if start:
+ 
+    if col2.button("Select Treasure"):
         st.session_state.reselect = True
+        # reset timer
+        st.session_state.start_time    = datetime.datetime.now()
+        st.session_state.timer_running = True
         
     # select_btn = col2.button("Select Treasure")
     # if select_btn:
     #     st.session_state.reselect = True
 
-    reset_btn = col3.button("Reset Hunter")
+    
    # button to reset (re-select) the hunter
-    if reset_btn:
+    if col3.button("Reset Hunter"):
         st.session_state.reset_hunter = True
+        # reset timer
+        # st.session_state.start_time    = datetime.datetime.now()
+        # st.session_state.timer_running = True
+
     
     while cap.isOpened():
         # if col3.button("Reset Hunter"):
@@ -133,8 +171,22 @@ def main():
                 c_h = centroid(box_h)
                 c_t = st.session_state.treasure_centroid
                 dist = euclidean(c_t, c_h)
-                if dist < 50:
+                if dist < 200:
                     st.session_state.state = "FOUND"
+                    
+        if st.session_state.state == "FOUND" and st.session_state.timer_running:
+            st.session_state.timer_running = False
+            st.session_state.end_time      = datetime.datetime.now()
+            # compute elapsed time
+            elapsed = (st.session_state.end_time - st.session_state.start_time).total_seconds()
+                
+            # turn time into points
+            round_pts = compute_round_score(elapsed)
+            st.session_state.score += round_pts
+
+            # optionally show last-round points
+            st.toast(f"🏅 You earned {round_pts} points!")
+
 
         # Visualization
         for t in tracks:
@@ -155,6 +207,36 @@ def main():
 
         video_container.image(frame, channels="BGR")
         info_container.write(f"Distance: {dist:.1f}px")
+        
+        
+        # ── display timer ──
+        if st.session_state.start_time:
+            if st.session_state.timer_running:
+                delta = datetime.datetime.now() - st.session_state.start_time
+            else:
+                delta = st.session_state.end_time - st.session_state.start_time
+            
+            secs = delta.total_seconds()
+            mins, secs_int = divmod(int(secs), 60)
+            micros = delta.microseconds
+            
+             # interpolate RGB
+            MAX_TIME = 60.0
+            t     = min(secs / MAX_TIME, 1.0)
+            r     = int(255 * t)
+            g     = int(255 * (1 - t))
+            color = f"#{r:02x}{g:02x}00"
+
+            
+            # display with the interpolated color
+            timer_text = f"⏱ {mins:02d}m:{secs_int:02d}s:{micros:06d}µs"
+            timer_container.markdown(
+                f"<span style='font-size:20px; color:{color};'>{timer_text}</span>",
+                unsafe_allow_html=True
+            )
+
+        # ── display score ──
+        score_container.write(f"🏆 Score: {st.session_state.score}")
 
         if st.session_state.state == "FOUND":
             info_container.success("Treasure Found!")
