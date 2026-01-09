@@ -1,0 +1,11 @@
+opencv-python
+ultralytics
+streamlit
+
+
+trackers
+supervision
+ultralytics
+pyrealsense2-macosx
+inference
+deep-sort-realtime
